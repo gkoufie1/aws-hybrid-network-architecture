@@ -1,0 +1,52 @@
+#!/bin/bash
+# Configures this instance as the "on-prem" side of the IPsec tunnel —
+# only tunnel1 of the two AWS provides is used (a real production setup
+# would configure both for redundancy; one is enough to prove the tunnel
+# and cross-site routing actually work for this demo).
+set -euo pipefail
+
+dnf install -y strongswan
+
+# On-prem side needs to forward + NAT traffic between its private subnet
+# and the tunnel, since it's acting as this subnet's router, not just an
+# endpoint.
+echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+sysctl -p
+
+cat > /etc/strongswan/ipsec.conf <<EOF
+config setup
+    uniqueids=yes
+
+conn tunnel1
+    authby=secret
+    auto=start
+    left=%defaultroute
+    leftid=${onprem_public_ip}
+    leftsubnet=${onprem_private_cidr}
+    right=${aws_tunnel_outside_ip}
+    rightsubnet=${aws_side_cidr}
+    type=tunnel
+    ikelifetime=8h
+    keylife=1h
+    ike=aes128-sha1-modp1024
+    esp=aes128-sha1
+    keyingtries=%forever
+    dpddelay=10
+    dpdtimeout=30
+    dpdaction=restart
+EOF
+
+cat > /etc/strongswan/ipsec.secrets <<EOF
+${onprem_public_ip} ${aws_tunnel_outside_ip} : PSK "${preshared_key}"
+EOF
+chmod 600 /etc/strongswan/ipsec.secrets
+
+# Route traffic from the on-prem private subnet through this instance,
+# then NAT it as it leaves the tunnel-facing interface so the return path
+# works without every AWS-side host needing an explicit route back to a
+# real on-prem network it's never heard of.
+PRIVATE_IFACE=$(ip -o -4 route show to ${onprem_private_cidr} | awk '{print $3}' | head -1)
+iptables -t nat -A POSTROUTING -s ${onprem_private_cidr} -d ${aws_side_cidr} -j MASQUERADE
+
+systemctl enable strongswan
+systemctl start strongswan
