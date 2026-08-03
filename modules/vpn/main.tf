@@ -38,10 +38,11 @@ resource "aws_vpn_connection" "onprem" {
   tags = { Name = "${var.name}-onprem" }
 }
 
-resource "aws_vpn_connection_route" "onprem_private" {
-  vpn_connection_id      = aws_vpn_connection.onprem.id
-  destination_cidr_block = var.onprem_private_cidr
-}
+# Note: aws_vpn_connection_route does NOT work for a VPN connection
+# attached to a Transit Gateway (only for the older VGW-attached style) —
+# AWS's API rejects it with "must be added through the Transit Gateway
+# API." The actual static route lives in the root module as an
+# aws_ec2_transit_gateway_route, using this attachment ID.
 
 resource "aws_security_group" "onprem_router" {
   name   = "${var.name}-onprem-router"
@@ -69,6 +70,19 @@ resource "aws_security_group" "onprem_router" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = [var.onprem_private_cidr]
+  }
+
+  # Traffic arriving decrypted through the tunnel, being forwarded onward to
+  # the on-prem private subnet — without this the tunnel negotiates fine
+  # (SG only sees the outer UDP 500/4500 packets for that), but nothing
+  # actually gets through, since the decapsulated inner packet is a
+  # separate ingress evaluation.
+  ingress {
+    description = "Decrypted tunnel traffic being forwarded to the on-prem subnet"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.aws_side_cidr_aggregate]
   }
 
   egress {
@@ -108,14 +122,15 @@ resource "aws_iam_instance_profile" "onprem_router" {
 }
 
 resource "aws_instance" "onprem_router" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = var.instance_type
-  subnet_id              = var.onprem_public_subnet_id
-  vpc_security_group_ids = [aws_security_group.onprem_router.id]
-  iam_instance_profile   = aws_iam_instance_profile.onprem_router.name
-  source_dest_check      = false # this instance routes traffic that isn't addressed to itself
+  ami                         = data.aws_ami.amazon_linux.id
+  instance_type               = var.instance_type
+  subnet_id                   = var.onprem_public_subnet_id
+  vpc_security_group_ids      = [aws_security_group.onprem_router.id]
+  iam_instance_profile        = aws_iam_instance_profile.onprem_router.name
+  source_dest_check           = false # this instance routes traffic that isn't addressed to itself
+  associate_public_ip_address = true  # genuinely public-facing — this IS the simulated on-prem VPN endpoint
 
-  user_data = templatefile("${path.module}/templates/strongswan-setup.sh.tftpl", {
+  user_data = templatefile("${path.module}/templates/libreswan-setup.sh.tftpl", {
     onprem_public_ip      = aws_eip.onprem_router.public_ip
     onprem_private_cidr   = var.onprem_private_cidr
     aws_tunnel_outside_ip = aws_vpn_connection.onprem.tunnel1_address

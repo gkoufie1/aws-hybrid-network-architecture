@@ -70,6 +70,46 @@ module "vpn" {
   aws_side_cidr_aggregate       = "10.0.0.0/8" # covers both 10.1.0.0/16 (HQ) and 10.2.0.0/16 (Branch)
 }
 
+# The VPN connection's static route has to be added to the Transit
+# Gateway's own route table, not via aws_vpn_connection_route (that
+# resource only works for VGW-attached VPNs).
+resource "aws_ec2_transit_gateway_route" "onprem" {
+  destination_cidr_block         = "10.3.1.0/24"
+  transit_gateway_route_table_id = module.transit_gateway.default_route_table_id
+  transit_gateway_attachment_id  = module.vpn.transit_gateway_attachment_id
+}
+
+# --- SSM VPC endpoints — private-subnet instances have no other way to be
+# reachable for management, since none of these VPCs have a NAT gateway or
+# internet gateway on the private side. ---
+
+module "vpc_endpoints_hq" {
+  source    = "./modules/vpc-endpoints"
+  name      = "hybrid-hq"
+  vpc_id    = module.vpc_hq.vpc_id
+  vpc_cidr  = "10.1.0.0/16"
+  subnet_id = module.vpc_hq.private_subnet_id
+  region    = var.aws_region
+}
+
+module "vpc_endpoints_branch" {
+  source    = "./modules/vpc-endpoints"
+  name      = "hybrid-branch"
+  vpc_id    = module.vpc_branch.vpc_id
+  vpc_cidr  = "10.2.0.0/16"
+  subnet_id = module.vpc_branch.private_subnet_id
+  region    = var.aws_region
+}
+
+module "vpc_endpoints_onprem" {
+  source    = "./modules/vpc-endpoints"
+  name      = "hybrid-onprem"
+  vpc_id    = module.vpc_onprem.vpc_id
+  vpc_cidr  = "10.3.0.0/16"
+  subnet_id = module.vpc_onprem.private_subnet_id
+  region    = var.aws_region
+}
+
 # --- Security groups for the test workloads used to verify connectivity ----
 
 module "sg_hq" {
@@ -130,34 +170,37 @@ locals {
 }
 
 resource "aws_instance" "test_hq" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  subnet_id              = module.vpc_hq.private_subnet_id
-  vpc_security_group_ids = [module.sg_hq.security_group_id]
-  iam_instance_profile   = aws_iam_instance_profile.test_workload.name
-  user_data              = local.test_server_user_data
+  ami                         = data.aws_ami.amazon_linux.id
+  instance_type               = "t3.micro"
+  subnet_id                   = module.vpc_hq.private_subnet_id
+  vpc_security_group_ids      = [module.sg_hq.security_group_id]
+  iam_instance_profile        = aws_iam_instance_profile.test_workload.name
+  associate_public_ip_address = false # private subnet, no default route to an IGW anyway — explicit for clarity
+  user_data                   = local.test_server_user_data
 
   tags = { Name = "hybrid-hq-test" }
 }
 
 resource "aws_instance" "test_branch" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  subnet_id              = module.vpc_branch.private_subnet_id
-  vpc_security_group_ids = [module.sg_branch.security_group_id]
-  iam_instance_profile   = aws_iam_instance_profile.test_workload.name
-  user_data              = local.test_server_user_data
+  ami                         = data.aws_ami.amazon_linux.id
+  instance_type               = "t3.micro"
+  subnet_id                   = module.vpc_branch.private_subnet_id
+  vpc_security_group_ids      = [module.sg_branch.security_group_id]
+  iam_instance_profile        = aws_iam_instance_profile.test_workload.name
+  associate_public_ip_address = false # private subnet, no default route to an IGW anyway — explicit for clarity
+  user_data                   = local.test_server_user_data
 
   tags = { Name = "hybrid-branch-test" }
 }
 
 resource "aws_instance" "test_onprem" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  subnet_id              = module.vpc_onprem.private_subnet_id
-  vpc_security_group_ids = [module.sg_onprem.security_group_id]
-  iam_instance_profile   = aws_iam_instance_profile.test_workload.name
-  user_data              = local.test_server_user_data
+  ami                         = data.aws_ami.amazon_linux.id
+  instance_type               = "t3.micro"
+  subnet_id                   = module.vpc_onprem.private_subnet_id
+  vpc_security_group_ids      = [module.sg_onprem.security_group_id]
+  iam_instance_profile        = aws_iam_instance_profile.test_workload.name
+  associate_public_ip_address = false # private subnet, no default route to an IGW anyway — explicit for clarity
+  user_data                   = local.test_server_user_data
 
   tags = { Name = "hybrid-onprem-test" }
 }

@@ -1,0 +1,72 @@
+#!/bin/bash
+# Configures this instance as the "on-prem" side of the IPsec tunnel, using
+# Libreswan — not strongSwan, which isn't in Amazon Linux 2023's default
+# repos (AWS's own sample customer-gateway configs for Amazon Linux use
+# Libreswan for exactly this reason, discovered by actually running this).
+# Only tunnel1 of the two AWS provides is used — a real production setup
+# would configure both for redundancy; one is enough to prove the tunnel
+# and cross-site routing actually work here.
+set -euo pipefail
+
+dnf install -y libreswan
+
+echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
+sysctl -p
+
+# nat_traversal and oe are both deprecated/removed config-setup options in
+# this Libreswan version (4.12) — NAT-T is auto-detected now, and setting
+# either causes "syntax error" and the daemon fails to start entirely.
+#
+# ikev2=no: AWS's static-route VPN tunnels negotiate IKEv1 by default;
+# without forcing this, Libreswan attempts IKEv2 first and the connection
+# never loads.
+#
+# modp2048, not modp1024: this Libreswan build doesn't support the
+# modp1024 DH group at all ("IKE DH algorithm 'modp1024' is not
+# supported") — modp2048 is supported and stronger anyway.
+cat > /etc/ipsec.conf <<EOF
+config setup
+    protostack=netkey
+
+conn tunnel1
+    authby=secret
+    auto=start
+    ikev2=no
+    left=%defaultroute
+    leftid=${onprem_public_ip}
+    leftsubnet=${onprem_private_cidr}
+    right=${aws_tunnel_outside_ip}
+    rightsubnet=${aws_side_cidr}
+    type=tunnel
+    ikelifetime=8h
+    keylife=1h
+    phase2alg=aes128-sha1;modp2048
+    ike=aes128-sha1;modp2048
+    keyingtries=%forever
+    dpddelay=10
+    dpdtimeout=30
+    dpdaction=restart
+EOF
+
+cat > /etc/ipsec.secrets <<EOF
+${onprem_public_ip} ${aws_tunnel_outside_ip} : PSK "${preshared_key}"
+EOF
+chmod 600 /etc/ipsec.secrets
+
+# NAT traffic leaving toward the AWS side so return packets route back
+# through this instance without every AWS-side host needing a route to a
+# real on-prem network it's never heard of.
+iptables -t nat -A POSTROUTING -s ${onprem_private_cidr} -d ${aws_side_cidr} -j MASQUERADE
+
+# The Amazon Linux 2023 base AMI ships with Docker's iptables rules already
+# in place, which set the FORWARD chain's default policy to DROP. Without
+# this, decrypted tunnel traffic arrives on the interface correctly (xfrm
+# shows zero errors) but silently never reaches the on-prem private subnet
+# — found by tcpdump on both ends showing the packet arrive here and never
+# arrive there, then checking `iptables -L FORWARD` and finding the policy
+# was DROP with packets already counted against it.
+iptables -I FORWARD -s ${aws_side_cidr} -d ${onprem_private_cidr} -j ACCEPT
+iptables -I FORWARD -s ${onprem_private_cidr} -d ${aws_side_cidr} -j ACCEPT
+
+systemctl enable ipsec
+systemctl start ipsec

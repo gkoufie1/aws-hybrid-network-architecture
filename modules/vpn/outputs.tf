@@ -9,3 +9,7 @@ output "onprem_router_instance_id" {
 output "vpn_connection_id" {
   value = aws_vpn_connection.onprem.id
 }
+
+output "transit_gateway_attachment_id" {
+  value = aws_vpn_connection.onprem.transit_gateway_attachment_id
+}
