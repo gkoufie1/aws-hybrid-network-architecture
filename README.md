@@ -16,11 +16,13 @@ topology, route propagation) rather than just following a guide.
 
 `terraform apply` succeeding on the first try turned out to be nowhere near
 the same claim as "the network actually passes traffic." Getting from a
-clean apply to a real `ping` succeeding end-to-end took finding and fixing
-8 separate real bugs — see
+clean apply to a real `ping` succeeding end-to-end, plus a working CI
+pipeline, took finding and fixing 9 separate real bugs — see
 [docs/POSTMORTEM.md](docs/POSTMORTEM.md) for the full story, including one
 caused by Amazon Linux 2023's AMI silently defaulting `iptables`' FORWARD
-chain to DROP.
+chain to DROP, and another caused by a GitHub OIDC claim-format change
+mid-session that made two byte-identical IAM trust policies behave
+differently.
 
 ## Verified working
 

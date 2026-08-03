@@ -21,6 +21,7 @@ the shell script in isolation.
 | 6 | Private-subnet test instances have no internet egress at all (by design — no NAT gateway) | SSM couldn't reach them: `describe-instance-information` returned an empty list, `send-command` failed with "Instances not in a valid state" | Added VPC Interface Endpoints (PrivateLink) for `ssm`, `ssmmessages`, `ec2messages` in all three VPCs — the standard enterprise pattern for managing instances with no internet path |
 | 7 | The router's security group had no ingress rule for traffic *arriving decrypted through the tunnel* | Tunnel showed a healthy IKE/ESP SA; `tcpdump` on the router showed the decrypted ping requests arriving correctly on `ens5` — but they went nowhere | Added an ingress rule from the AWS-side CIDR aggregate; the existing rules only covered the outer IPsec ports and the on-prem-subnet-to-router direction |
 | 8 | The Amazon Linux 2023 AMI ships with Docker's iptables rules pre-installed, which set the `FORWARD` chain's default policy to `DROP` | The most misleading one: `xfrm_stat` showed zero decryption errors, the packet visibly arrived on the router's interface via `tcpdump` — and still never reached the destination. `iptables -L FORWARD` showed `policy DROP`, with packets already counted against it | Added explicit `ACCEPT` rules for the tunnel traffic in both directions |
+| 9 | GitHub's OIDC token `sub` claim now includes immutable numeric IDs (`repo:owner@OWNER_ID/repo@REPO_ID:ref:...`), not just the plain `repo:owner/repo:ref:...` format most examples online still show | CI's `Configure AWS credentials` step failed for over an hour with `Not authorized to perform sts:AssumeRoleWithWebIdentity` — the IAM trust policy's `StringLike` condition was byte-for-byte identical to another, working role's policy in the same account, which made it look like a propagation delay rather than a real mismatch | Checked CloudTrail's `AssumeRoleWithWebIdentity` denial event directly — the `principalId` field showed the *actual* `sub` claim GitHub sent, which didn't match the trust policy pattern at all. Updated the trust policy to accept both the classic and the new ID-suffixed format |
 
 ## How each was actually found
 
@@ -44,7 +45,7 @@ code:
 
 ## What "verified" actually means here
 
-This wasn't fixed once and left running. After all 8 fixes:
+This wasn't fixed once and left running. After bugs #1–8 were fixed:
 
 1. Full `terraform destroy` — 54 resources, clean.
 2. Fresh `terraform apply` from the corrected code, from empty state — 54
@@ -57,14 +58,21 @@ That sequence — destroy, reapply from git, verify cold — is what actually
 distinguishes "I fixed it on the running instance" from "the code in this
 repository works." Only the second claim is backed by evidence here.
 
+Bug #9 (the CI role) surfaced afterward, separately — proof that "the
+Terraform is correct" and "the CI pipeline that runs it is correctly
+configured" are two different claims too, each needing their own
+verification, not just one covering both.
+
 ## Takeaway
 
 `terraform apply` finishing without error, and even the VPN tunnel's IKE
 SA reporting "established," were both necessary but nowhere near sufficient
 conditions for "this network works." The gap between those two claims was
-8 distinct bugs deep, spanning package availability, protocol version
+9 distinct bugs deep, spanning package availability, protocol version
 negotiation, cryptographic algorithm support, an AWS API quirk specific to
 Transit-Gateway-attached VPNs, a networking blind spot (private subnets
-with no path to SSM), and a security-group/iptables interaction that
-looked, at every layer above the packet capture, like it should have
-worked.
+with no path to SSM), a security-group/iptables interaction that looked,
+at every layer above the packet capture, like it should have worked, and
+finally an identity-federation claim format change that made two
+byte-identical IAM trust policies behave differently depending on when the
+underlying repo was created.
