@@ -49,6 +49,17 @@ Hello from ip-10-3-1-21.eu-west-2.compute.internal
 
 Branch VPC → on-prem was verified the same way, with the same result.
 
+Console view from that same live test session, before teardown (this
+project is destroyed between test sessions to avoid ongoing cost — see
+[Deployment](#deployment) — so these reflect a specific run, not an
+always-on environment):
+
+| | |
+|---|---|
+| ![Transit Gateway](docs/screenshots/transit-gateway.png) | ![Transit Gateway attachments — 2 VPCs + VPN](docs/screenshots/tgw-attachments.png) |
+| ![VPN connection, attached to the Transit Gateway](docs/screenshots/vpn-connections.png) | ![The 3 project VPCs (HQ, Branch, on-prem-sim)](docs/screenshots/vpcs.png) |
+| ![Test workload and router instances running](docs/screenshots/ec2-instances.png) | |
+
 ## Architecture
 
 ```mermaid
